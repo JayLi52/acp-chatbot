@@ -4,6 +4,12 @@ A WebSocket chatbot whose backend is **Claude Code running as an agent**, with
 the **weather MCP server** loaded so the agent can call `mcp__weather__*` tools
 on demand. The browser streams the assistant's reply token-by-token.
 
+## Demo
+
+Weather queries with live tool calls (input + result) and streaming answers:
+
+![Demo: weather queries with live tool calls and streaming answers](docs/demo.png)
+
 ```
 browser ──WebSocket──> server.js ──spawn──> claude -p --output-format stream-json
                                             (reads ~/.claude/settings.json → glm-5.2,
