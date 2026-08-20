@@ -1,0 +1,13 @@
+{
+  "name": "acp-chatbot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WebSocket chatbot backed by Claude Code (stream-json) with the weather MCP server loaded.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}

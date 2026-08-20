@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Agent Chat</title>
+<style>
+  :root { --bg:#0f1117; --panel:#171a23; --line:#262a36; --txt:#e6e6e6;
+          --muted:#8a90a0; --accent:#b88a4f; --user:#2a2f3d; --ai:#1b1f2b;
+          --tool:#14171f; --tool-bd:#3a3320; --ok:#5cb85c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  header { position:sticky; top:0; z-index:5; display:flex; align-items:center;
+           gap:10px; padding:10px 16px; background:var(--panel);
+           border-bottom:1px solid var(--line); }
+  header .dot { width:9px;height:9px;border-radius:50%;background:var(--accent); }
+  header h1 { font-size:15px; font-weight:600; margin:0; }
+  header .badge { font-size:11px; color:var(--muted); }
+  header .badge .ok { color:var(--ok); }
+  header button { margin-left:auto; background:transparent; color:var(--muted);
+                  border:1px solid var(--line); border-radius:6px; padding:5px 10px;
+                  font-size:12px; cursor:pointer; }
+  header button:hover { color:var(--txt); border-color:var(--accent); }
+  main { max-width:900px; margin:0 auto; padding:20px 16px 160px; }
+  .msg { display:flex; margin:0 0 18px; }
+  .msg .who { flex:0 0 34px; height:34px; border-radius:9px; margin-right:12px;
+              display:flex; align-items:center; justify-content:center; font-size:13px;
+              font-weight:600; color:#fff; }
+  .msg.user .who { background:var(--accent); }
+  .msg.ai .who { background:#6b4fbb; }
+  .bubble { flex:1; min-width:0; }
+  .msg.user .bubble { background:var(--user); padding:10px 14px; border-radius:10px;
+                      display:inline-block; max-width:100%; white-space:pre-wrap; }
+  .msg.ai .bubble { background:var(--ai); padding:12px 14px; border-radius:10px;
+                    border:1px solid var(--line); }
+  .bubble .ans { white-space:pre-wrap; word-break:break-word; }
+  .bubble .ans.cursor::after { content:"▍"; color:var(--accent); animation:bk 1s steps(2) infinite; }
+  @keyframes bk { 50%{opacity:0;} }
+  .bubble pre { background:#0c0e14; padding:10px; border-radius:8px; overflow:auto; margin:8px 0; font-size:13px; }
+  .bubble code { font-family:"SFMono-Regular",Consolas,monospace; background:#0c0e14; padding:1px 4px; border-radius:4px; }
+  .tool { background:var(--tool); border:1px solid var(--tool-bd); border-radius:8px;
+          margin:8px 0; padding:8px 10px; font-size:13px; }
+  .tool .head { display:flex; align-items:center; gap:8px; color:var(--muted); }
+  .tool .head .name { color:#d8c39a; font-weight:600; }
+  .tool .head .st { margin-left:auto; font-size:11px; }
+  .tool .head .st.pending { color:var(--muted); }
+  .tool .head .st.done { color:var(--ok); }
+  .tool .in, .tool .out { color:var(--muted); white-space:pre-wrap; word-break:break-word;
+                          margin-top:6px; font-size:12px; max-height:220px; overflow:auto; }
+  .tool .in b, .tool .out b { color:#a9b0c0; }
+  .stat { text-align:center; color:var(--muted); font-size:12px; padding:2px 0; }
+  .err { color:#ff6b6b; }
+  footer { position:fixed; bottom:0; left:0; right:0; background:var(--panel);
+           border-top:1px solid var(--line); }
+  .compose { max-width:900px; margin:0 auto; padding:12px 16px; display:flex; gap:10px; }
+  textarea { flex:1; resize:none; height:52px; max-height:180px; padding:12px 14px;
+             background:#0c0e14; color:var(--txt); border:1px solid var(--line);
+             border-radius:10px; font:inherit; outline:none; }
+  textarea:focus { border-color:var(--accent); }
+  button.send { flex:0 0 auto; background:var(--accent); color:#fff; border:0;
+                border-radius:10px; padding:0 20px; font-size:14px; font-weight:600;
+                cursor:pointer; }
+  button.send:disabled { opacity:.5; cursor:default; }
+  .hint { text-align:center; color:var(--muted); font-size:12px; padding:6px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot"></span>
+  <h1>Claude Agent Chat</h1>
+  <span class="badge" id="badge">连接中…</span>
+  <button id="clear">清空</button>
+</header>
+<main id="log"></main>
+<footer>
+  <div class="compose">
+    <textarea id="input" placeholder="问点什么，比如「北京现在多少度？」 Enter 发送" autofocus disabled></textarea>
+    <button class="send" id="send" disabled>发送</button>
+  </div>
+  <div class="hint">Claude Code agent · glm-5.2 · 天气 MCP 工具实时调用</div>
+</footer>
+
+<script>
+const log = document.getElementById("log");
+const input = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+const clearBtn = document.getElementById("clear");
+const badge = document.getElementById("badge");
+
+let ws = null;
+let busy = false;
+let currentMsgId = null;
+const aiBubbles = new Map();   // messageId -> {bubble, ansEl, text, streamed}
+const toolChips = new Map();   // toolUseId -> element
+
+function scrollBottom(){ window.scrollTo(0, document.body.scrollHeight); }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function renderMd(t){
+  let h = escapeHtml(t);
+  h = h.replace(/```([\s\S]*?)```/g, (_,c)=>`<pre>${c.replace(/^\n/,"")}</pre>`);
+  h = h.replace(/`([^`]+)`/g, "<code>$1</code>");
+  h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  return h;
+}
+function addMsg(role){
+  const m = document.createElement("div");
+  m.className = "msg " + role;
+  m.innerHTML = `<div class="who">${role==="user"?"我":"AI"}</div><div class="bubble"></div>`;
+  log.appendChild(m);
+  return m.querySelector(".bubble");
+}
+function toolDisplayName(n){ return (n||"tool").replace(/^mcp__weather__/,"weather.").replace(/^mcp__/,"mcp"); }
+
+let reconnectTimer = null;
+function connect(){
+  const url = (location.protocol==="https:"?"wss":"ws") + "://" + location.host + "/";
+  try { ws = new WebSocket(url); } catch { scheduleReconnect(); return; }
+  ws.onopen = ()=>{ reconnectTimer=null; badge.innerHTML="已连接，等待 agent"; input.disabled=false; sendBtn.disabled=false; input.focus(); };
+  ws.onmessage = (e)=> onMsg(JSON.parse(e.data));
+  ws.onclose = ()=>{
+    badge.innerHTML = '<span style="color:#e0a060">连接断开，自动重连中…</span>';
+    input.disabled=true; sendBtn.disabled=true;
+    scheduleReconnect();
+  };
+  ws.onerror = ()=>{};
+}
+function scheduleReconnect(){
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(()=>{ reconnectTimer=null; connect(); }, 1500);
+}
+
+function onMsg(m){
+  switch(m.t){
+    case "status": {
+      let s = document.querySelector(".stat.cur");
+      if (!s){ s=document.createElement("div"); s.className="stat cur"; log.appendChild(s); }
+      s.textContent = m.message;
+      scrollBottom(); break;
+    }
+    case "init": {
+      document.querySelector(".stat.cur")?.remove();
+      const wcount = (m.tools||[]).filter(t=>t.startsWith("mcp__weather__")).length;
+      const wstatus = (m.mcp||[]).find(x=>x.name==="weather");
+      badge.innerHTML = `model <b>${escapeHtml(m.model||"?")}</b> · 天气工具 ${wcount} 个 <span class="ok">${wstatus&&wstatus.status==="connected"?"✓已连接":"未连接"}</span>`;
+      break;
+    }
+    case "stream": handleStream(m.event); break;
+    case "assistant": handleAssistant(m.message); break;
+    case "user": handleUser(m.message); break;
+    case "result": {
+      const r = m.evt;
+      document.querySelector(".stat.cur")?.remove();
+      // finalize: re-render the streamed (plain) text into markdown
+      const last = lastAiBubble();
+      if (last && last.text){ last.ansEl.innerHTML = renderMd(last.text); }
+      let s = document.createElement("div"); s.className="stat";
+      s.textContent = r ? `完成 · ${(r.duration_ms/1000).toFixed(1)}s · ${r.num_turns||1} 轮` : "完成";
+      log.appendChild(s);
+      // remove cursors
+      document.querySelectorAll(".ans.cursor").forEach(e=>e.classList.remove("cursor"));
+      scrollBottom();
+      break;
+    }
+    case "done": { busy=false; sendBtn.disabled=false; input.focus(); break; }
+    case "stderr": /* quiet */ break;
+    case "error": {
+      const b = lastAiBubble() ? lastAiBubble().bubble : addMsg("ai");
+      b.insertAdjacentHTML("beforeend", `<div class="err">错误：${escapeHtml(m.message)}</div>`);
+      scrollBottom(); busy=false; sendBtn.disabled=false; break;
+    }
+    default: break;
+  }
+}
+
+function lastAiBubble(){
+  let last=null;
+  for (const v of aiBubbles.values()) last=v;
+  return last;
+}
+
+function handleAssistant(message){
+  if (!message) return;
+  const id = message.id;
+  let entry = aiBubbles.get(id);
+  if (!entry){
+    document.querySelector(".stat.cur")?.remove();
+    const bubble = addMsg("ai");
+    const ansEl = document.createElement("div"); ansEl.className="ans cursor"; bubble.appendChild(ansEl);
+    entry = { bubble, ansEl, text:"", streamed:false };
+    aiBubbles.set(id, entry);
+  }
+  // The coalesced assistant message: render tool calls; only set text as a
+  // fallback (text usually already streamed token-by-token via handleStream).
+  for (const b of (message.content || [])){
+    if (b.type === "tool_use") ensureToolChip(entry.bubble, b.id, b.name, b.input);
+    else if (b.type === "text" && !entry.streamed){ entry.text = b.text; entry.ansEl.innerHTML = renderMd(b.text); }
+  }
+  scrollBottom();
+}
+
+// Token-level streaming: --include-partial-messages wraps raw Anthropic SSE
+// events in {type:"stream_event", event:{...}}. Append text_delta chunks.
+function handleStream(event){
+  if (!event) return;
+  if (event.type === "message_start" && event.message){
+    const id = event.message.id;
+    if (!aiBubbles.has(id)){
+      document.querySelector(".stat.cur")?.remove();
+      const bubble = addMsg("ai");
+      const ansEl = document.createElement("div"); ansEl.className="ans cursor"; bubble.appendChild(ansEl);
+      aiBubbles.set(id, { bubble, ansEl, text:"", streamed:false });
+    }
+    currentMsgId = id;
+  } else if (event.type === "content_block_start" && event.content_block && event.content_block.type === "tool_use"){
+    const e = aiBubbles.get(currentMsgId);
+    if (e) ensureToolChip(e.bubble, event.content_block.id, event.content_block.name, {});
+  } else if (event.type === "content_block_delta" && event.delta && event.delta.type === "text_delta"){
+    const e = aiBubbles.get(currentMsgId);
+    if (e){ e.streamed = true; e.text += event.delta.text; e.ansEl.textContent = e.text; scrollBottom(); }
+  }
+}
+
+function ensureToolChip(bubble, toolUseId, name, input){
+  let el = toolChips.get(toolUseId);
+  if (!el){
+    el = document.createElement("div"); el.className="tool";
+    const head = document.createElement("div"); head.className="head";
+    head.innerHTML = `🔧 <span class="name">${escapeHtml(toolDisplayName(name))}</span><span class="st pending">运行中…</span>`;
+    const inEl = document.createElement("div"); inEl.className="in";
+    el.appendChild(head); el.appendChild(inEl);
+    bubble.appendChild(el);
+    toolChips.set(toolUseId, el);
+  }
+  const inEl = el.querySelector(".in");
+  const hasInput = input && typeof input === "object" && Object.keys(input).length > 0;
+  if (hasInput) inEl.innerHTML = "<b>入参</b>\n" + escapeHtml(JSON.stringify(input, null, 2));
+  else if (!inEl.innerHTML) inEl.innerHTML = "<b>入参</b> <span style='color:#6a6a6a'>构建中…</span>";
+  scrollBottom();
+  return el;
+}
+
+function handleUser(message){
+  if (!message) return;
+  for (const b of (message.content || [])){
+    if (b.type === "tool_result" && b.tool_use_id){
+      const el = toolChips.get(b.tool_use_id);
+      if (el){
+        el.querySelector(".st").className = "st done"; el.querySelector(".st").textContent = "完成";
+        let txt = "";
+        const c = b.content;
+        if (Array.isArray(c)) txt = c.map(x=>x.text||"").join("");
+        else if (typeof c === "string") txt = c;
+        const out = document.createElement("div"); out.className="out";
+        out.innerHTML = "<b>结果</b><br>" + escapeHtml(String(txt).slice(0,1200));
+        el.appendChild(out);
+      }
+    }
+  }
+  scrollBottom();
+}
+
+function send(){
+  if (busy || !ws || ws.readyState!==1) return;
+  const text = input.value.trim();
+  if (!text) return;
+  input.value=""; input.style.height="52px";
+  aiBubbles.clear(); toolChips.clear();
+  const b = addMsg("user"); b.textContent = text;
+  busy = true; sendBtn.disabled = true;
+  ws.send(JSON.stringify({ text }));
+  scrollBottom();
+}
+sendBtn.addEventListener("click", send);
+input.addEventListener("keydown", e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); }});
+input.addEventListener("input", ()=>{ input.style.height="52px"; input.style.height=Math.min(input.scrollHeight,180)+"px"; });
+clearBtn.addEventListener("click", ()=>{ log.innerHTML=""; aiBubbles.clear(); toolChips.clear(); });
+
+connect();
+input.focus();
+</script>
+</body>
+</html>
